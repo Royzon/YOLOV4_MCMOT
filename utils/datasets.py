@@ -1,3 +1,5 @@
+# encoding=utf-8
+
 import glob
 import math
 import os
@@ -43,7 +45,12 @@ def exif_size(img):
 
 
 class LoadImages:  # for inference
-    def __init__(self, path, img_size=416):
+    def __init__(self, path, net_w=416, net_h=416):
+        """
+        :param path:
+        :param net_w:
+        :param net_h:
+        """
         if type(path) == list:
             self.files = path
 
@@ -51,7 +58,10 @@ class LoadImages:  # for inference
             self.nF = nI + nV  # number of files
             self.video_flag = [False] * nI + [True] * nV
 
-            self.img_size = img_size
+            # net input height width
+            self.net_w = net_w
+            self.net_h = net_h
+
             self.mode = 'images'
             self.cap = None
         else:
@@ -61,12 +71,17 @@ class LoadImages:  # for inference
                 files = sorted(glob.glob(os.path.join(path, '*.*')))
             elif os.path.isfile(path):
                 files = [path]
+            else:
+                print('[Err]: invalid file list path.')
+                exit(-1)
 
             images = [x for x in files if os.path.splitext(x)[-1].lower() in img_formats]
             videos = [x for x in files if os.path.splitext(x)[-1].lower() in vid_formats]
             nI, nV = len(images), len(videos)
 
-            self.img_size = img_size
+            self.net_w = net_w
+            self.net_h = net_h
+
             self.files = images + videos
             self.nF = nI + nV  # number of files
             self.video_flag = [False] * nI + [True] * nV
@@ -101,21 +116,25 @@ class LoadImages:  # for inference
                     self.new_video(path)
                     ret_val, img0 = self.cap.read()
 
+            if self.frame % 30 == 0:
+                # print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nF, self.frame, self.nframes, path))
+                print('video (%g/%g) %s: ' % (self.frame, self.nframes, path))
             self.frame += 1
-            print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nF, self.frame, self.nframes, path))
 
         else:
             # Read image
             self.count += 1
-            img0 = cv2.imread(path)  # BGR
+            img0 = cv2.imread(path)  # HWC(BGR)
+
             assert img0 is not None, 'Image Not Found ' + path
             print('image %g/%g %s: ' % (self.count, self.nF, path), end='')
 
-        # Padded resize
-        img = letterbox(img0, new_shape=self.img_size)[0]  # to make sure mod by 64
+        # Pad and resize
+        # img = letterbox(img0, new_shape=self.img_size)[0]  # to make sure mod by 64
+        img = pad_resize_ratio(img0, self.net_w, self.net_h)
 
-        # Convert
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        # Convert: BGR to RGB and HWC to CHW
+        img = img[:, :, ::-1].transpose(2, 0, 1)
         img = np.ascontiguousarray(img)
 
         # cv2.imwrite(path + '.letterbox.jpg', 255 * img.transpose((1, 2, 0))[:, :, ::-1])  # save letterbox image
@@ -303,7 +322,9 @@ class LoadImgsAndLbsWithID(Dataset):  # for training/testing
 
         self.n = n
         self.batch = bi  # batch index of each image
+
         self.img_size = img_size
+
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
@@ -356,6 +377,7 @@ class LoadImgsAndLbsWithID(Dataset):  # for training/testing
 
         self.imgs = [None] * n
         self.labels = [np.zeros((0, 6), dtype=np.float32)] * n
+
         extract_bounding_boxes = False
         create_data_subset = False
         p_bar = tqdm(self.label_files, desc='Caching labels')
@@ -368,7 +390,7 @@ class LoadImgsAndLbsWithID(Dataset):  # for training/testing
                 nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                 continue
 
-            if lb.shape[0]:  # 该图片标注的目标个数
+            if lb.shape[0]:  # objects number in the image
                 assert lb.shape[1] == 6, '!= 6 label columns: %s' % file
                 assert (lb >= 0).all(), 'negative labels: %s' % file
                 assert (lb[:, 2:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
@@ -422,7 +444,11 @@ class LoadImgsAndLbsWithID(Dataset):  # for training/testing
 
             p_bar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
                 nf, nm, ne, nd, n)
-        assert nf > 0, 'No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
+
+        # assert nf > 0, 'No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
+        if nf == 0:
+            print('No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url))
+            exit(-1)
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         if cache_images:  # if training
@@ -587,12 +613,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         n = len(self.img_files)
         assert n > 0, 'No images found in %s. See %s' % (path, help_url)
+
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
 
         self.n = n
         self.batch = bi  # batch index of each image
+
         self.img_size = img_size
+
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
@@ -605,7 +634,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Define labels
         self.label_files = [x.replace('JPEGImages', 'labels').replace(os.path.splitext(x)[-1], '.txt')
                             for x in self.img_files]
-        print(self.label_files[0])
+        # print(self.label_files[0])
 
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
         if self.rect:
@@ -640,11 +669,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             self.batch_shapes = np.ceil(np.array(shapes) * img_size / 64.).astype(np.int) * 64
 
-        # Cache labels
+        # ---------- Cache labels: pure negative image sample(only contain background)
+        # by caching
         self.imgs = [None] * n
         self.labels = [np.zeros((0, 5), dtype=np.float32)] * n
+
         extract_bounding_boxes = False
-        create_datasubset = False
+        create_data_subset = False
         pbar = tqdm(self.label_files, desc='Caching labels')
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
         for i, file in enumerate(pbar):
@@ -655,7 +686,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                 continue
 
-            if l.shape[0]:  # 该图片标注的目标个数
+            if l.shape[0]:  # objects number of this label
                 assert l.shape[1] == 5, '> 5 label columns: %s' % file
                 assert (l >= 0).all(), 'negative labels: %s' % file
                 assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
@@ -664,11 +695,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
                 if single_cls:
                     l[:, 0] = 0  # force dataset into single-class mode: turn mc to sc
+
+                # Filling the label
                 self.labels[i] = l
                 nf += 1  # file found
 
-                # Create subdataset (a smaller dataset)
-                if create_datasubset and ns < 1E4:
+                # Create sub dataset (a smaller dataset)
+                if create_data_subset and ns < 1E4:
                     if ns == 0:
                         create_folder(path='./datasubset')
                         os.makedirs('./datasubset/images')
@@ -701,8 +734,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 ne += 1  # print('empty labels for image %s' % self.img_files[i])  # file empty
                 # os.system("rm '%s' '%s'" % (self.img_files[i], self.label_files[i]))  # remove
 
-            pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
-                nf, nm, ne, nd, n)
+            pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' \
+                        % (nf, nm, ne, nd, n)
         assert nf > 0, 'No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
@@ -748,10 +781,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
 
-            # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            # ---------- Letterbox
+            # final letter-boxed shape
+            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size
+
+            # ----- letter box
+            # or pad_resize_ratio(this methods keeps consistency with dark-net)
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+            # ----------
 
             # Load labels
             labels = []
@@ -995,6 +1034,74 @@ def load_mosaic(self, index):
     return img4, labels4
 
 
+# keep aspect ratio
+def pad_resize_ratio(img, net_w, net_h):
+    """
+    :param img:
+    :param net_w:
+    :param net_h:
+    :return:
+    """
+    img = np.array(img)  # H x W x channels
+    H, W, channels = img.shape
+
+    if net_h / net_w < H / W:  # padding w
+        new_h = int(net_h)
+        new_w = int(net_h / H * W)
+
+        pad = (net_w - new_w) // 2
+
+        left = round(pad - 0.1)
+        right = round(pad + 0.1)
+
+        top, bottom = 0, 0
+    else:  # padding w
+        new_h = int(net_w / W * H)
+        new_w = int(net_w)
+
+        pad = (net_h - new_h) // 2
+
+        left, right = 0, 0
+
+        top = round(pad - 0.1)
+        bottom = round(pad + 0.1)
+
+    img_resize = cv2.resize(img, (new_w, new_h), cv2.INTER_LINEAR)
+
+    # add border
+    img_out = cv2.copyMakeBorder(img_resize, top, bottom, left, right, cv2.BORDER_CONSTANT, value=127)
+    return img_out
+
+
+def pad_resize_img_square(img, square_size):
+    """
+    :param img: RGB image
+    :return: square image
+    """
+    img = np.array(img)  # H x W x channels
+    H, W, channels = img.shape
+    dim_diff = np.abs(H - W)
+
+    # upper(left) and lower(right) padding
+    pad_lu = dim_diff // 2  # integer division
+    pad_rd = dim_diff - pad_lu
+
+    # determine padding for each axis: H, W, channels
+    pad = ((pad_lu, pad_rd), (0, 0), (0, 0)) if H <= W else \
+        ((0, 0), (pad_lu, pad_rd), (0, 0))
+
+    # do padding(0.5) and normalize
+    img = np.pad(img,
+                 pad,
+                 'constant',
+                 constant_values=127.5)  # / 255.0
+    img = cv2.resize(img,
+                     (square_size, square_size),
+                     cv2.INTER_LINEAR)
+    # img.tofile('/mnt/diskb/even/img.bin')
+    return img
+
+
 def letterbox(img,
               new_shape=(416, 416),
               color=(114, 114, 114),
@@ -1036,9 +1143,12 @@ def letterbox(img,
 
     if shape[::-1] != new_unpad:  # resize
         img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
     img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+
     return img, ratio, (dw, dh)
 
 
@@ -1247,7 +1357,8 @@ def cutout(image, labels):
     return labels
 
 
-def reduce_img_size(path='../data/sm4/images', img_size=1024):  # from utils.datasets import *; reduce_img_size()
+def reduce_img_size(path='../data/sm4/images',
+                    img_size=1024):  # from evaluate_utils.datasets import *; reduce_img_size()
     # creates a new ./images_reduced folder with reduced size images of maximum size img_size
     path_new = path + '_reduced'  # reduced images path
     create_folder(path_new)
@@ -1264,7 +1375,7 @@ def reduce_img_size(path='../data/sm4/images', img_size=1024):  # from utils.dat
             print('WARNING: image failure %s' % f)
 
 
-def convert_images2bmp():  # from utils.datasets import *; convert_images2bmp()
+def convert_images2bmp():  # from evaluate_utils.datasets import *; convert_images2bmp()
     # Save images
     formats = [x.lower() for x in img_formats] + [x.upper() for x in img_formats]
     # for path in ['../coco/images/val2014', '../coco/images/train2014']:
@@ -1288,7 +1399,7 @@ def convert_images2bmp():  # from utils.datasets import *; convert_images2bmp()
             f.write(lines)
 
 
-def recursive_dataset2bmp(dataset='../data/sm4_bmp'):  # from utils.datasets import *; recursive_dataset2bmp()
+def recursive_dataset2bmp(dataset='../data/sm4_bmp'):  # from evaluate_utils.datasets import *; recursive_dataset2bmp()
     # Converts dataset to bmp (for faster training)
     formats = [x.lower() for x in img_formats] + [x.upper() for x in img_formats]
     for a, b, files in os.walk(dataset):
@@ -1308,7 +1419,7 @@ def recursive_dataset2bmp(dataset='../data/sm4_bmp'):  # from utils.datasets imp
                     os.system("rm '%s'" % p)
 
 
-def imagelist2folder(path='data/coco_64img.txt'):  # from utils.datasets import *; imagelist2folder()
+def imagelist2folder(path='data/coco_64img.txt'):  # from evaluate_utils.datasets import *; imagelist2folder()
     # Copies all the images in a text file (list of images) into a folder
     create_folder(path[:-4])
     with open(path, 'r') as f:

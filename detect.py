@@ -79,7 +79,7 @@ def detect(save_img=False):
         dataset = LoadStreams(source, img_size=img_size)
     else:
         save_img = True
-        dataset = LoadImages(source, img_size=img_size)
+        dataset = LoadImages(source, net_w=img_size)
 
     # Get names and colors
     names = load_classes(opt.names)
@@ -110,8 +110,12 @@ def detect(save_img=False):
             pred = pred.float()
 
         # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres,
-                                   merge=False, classes=opt.classes, agnostic=opt.agnostic_nms)
+        pred = non_max_suppression(pred,
+                                   opt.conf_thres,
+                                   opt.iou_thres,
+                                   merge=False,
+                                   classes=opt.classes,
+                                   agnostic=opt.agnostic_nms)
 
         # Apply Classifier
         if classify:

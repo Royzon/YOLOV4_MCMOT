@@ -1,9 +1,14 @@
-import os
+# encoding=utf-8
 
+import os
 import numpy as np
 
 
 def parse_model_cfg(path):
+    """
+    :param path:
+    :return:
+    """
     # Parse the yolo *.cfg file and return module definitions path may be 'cfg/yolov3.cfg', 'yolov3.cfg', or 'yolov3'
     if not path.endswith('.cfg'):  # add .cfg suffix if omitted
         path += '.cfg'
@@ -12,9 +17,11 @@ def parse_model_cfg(path):
 
     with open(path, 'r') as f:
         lines = f.read().split('\n')
+
     lines = [x for x in lines if x and not x.startswith('#')]
     lines = [x.rstrip().lstrip() for x in lines]  # get rid of fringe whitespaces
     mdefs = []  # module definitions
+
     for line in lines:
         if line.startswith('['):  # This marks the start of a new block
             mdefs.append({})
@@ -25,7 +32,7 @@ def parse_model_cfg(path):
             key, val = line.split("=")
             key = key.rstrip()
 
-            if key == 'anchors':  # return nparray
+            if key == 'anchors':  # return np-array
                 mdefs[-1][key] = np.array([float(x) for x in val.split(',')]).reshape((-1, 2))  # np anchors
             elif (key in ['from', 'layers', 'mask']) or (key == 'size' and ',' in val):  # return array
                 mdefs[-1][key] = [int(x) for x in val.split(',')]
@@ -40,7 +47,7 @@ def parse_model_cfg(path):
     supported = ['type', 'batch_normalize', 'filters', 'size', 'stride', 'pad', 'activation', 'layers', 'groups',
                  'from', 'mask', 'anchors', 'classes', 'num', 'jitter', 'ignore_thresh', 'truth_thresh', 'random',
                  'stride_x', 'stride_y', 'weights_type', 'weights_normalization', 'scale_x_y', 'beta_nms', 'nms_kind',
-                 'iou_loss', 'iou_normalizer', 'cls_normalizer', 'iou_thresh', 'groups', 'group_id']
+                 'iou_loss', 'iou_normalizer', 'cls_normalizer', 'iou_thresh', 'groups', 'group_id', 'probability']
 
     f = []  # fields
     for x in mdefs[1:]:
